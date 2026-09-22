@@ -1,0 +1,99 @@
+---
+- name: Harden It - CIS-aligned hardening for Ubuntu Server
+  hosts: localhost
+  connection: local
+  become: yes
+
+  tasks:
+    - name: SSH - disable X11 forwarding
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^X11Forwarding'
+        line: 'X11Forwarding no'
+
+    - name: SSH - disable agent forwarding
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^AllowAgentForwarding'
+        line: 'AllowAgentForwarding no'
+
+    - name: SSH - disable TCP forwarding
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^AllowTcpForwarding'
+        line: 'AllowTcpForwarding no'
+
+    - name: SSH - lower MaxAuthTries
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^MaxAuthTries'
+        line: 'MaxAuthTries 3'
+
+    - name: SSH - lower MaxSessions
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^MaxSessions'
+        line: 'MaxSessions 2'
+
+    - name: SSH - verbose logging
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^LogLevel'
+        line: 'LogLevel VERBOSE'
+
+    - name: SSH - disable TCPKeepAlive
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^TCPKeepAlive'
+        line: 'TCPKeepAlive no'
+
+    - name: Restart SSH to apply changes
+      service:
+        name: ssh
+        state: restarted
+
+    - name: Enable ufw firewall
+      community.general.ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    - name: Allow SSH through firewall (don't lock yourself out)
+      community.general.ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+
+    - name: Set minimum password age
+      lineinfile:
+        path: /etc/login.defs
+        regexp: '^PASS_MIN_DAYS'
+        line: 'PASS_MIN_DAYS 7'
+
+    - name: Set maximum password age
+      lineinfile:
+        path: /etc/login.defs
+        regexp: '^PASS_MAX_DAYS'
+        line: 'PASS_MAX_DAYS 90'
+
+    - name: Set stricter default umask
+      lineinfile:
+        path: /etc/login.defs
+        regexp: '^UMASK'
+        line: 'UMASK 027'
+
+    - name: Install PAM password strength module
+      apt:
+        name: libpam-pwquality
+        state: present
+
+    - name: Install fail2ban
+      apt:
+        name: fail2ban
+        state: present
+
+    - name: Ensure fail2ban is running
+      service:
+        name: fail2ban
+        state: started
+        enabled: yes
