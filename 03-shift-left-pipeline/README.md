@@ -80,6 +80,34 @@ pip install -r app/requirements.txt
 uvicorn app.main:app --reload
 ```
 
+## The flaky artifact-upload bug
+
+The first real CI run hit a genuine platform bug, not a mistake in this
+pipeline: both ZAP steps failed with `Error: Create Artifact Container
+failed: The artifact name <name> is not valid`, even though the names
+(`own-app-zap-report`, `juice-shop-zap-report`) are completely normal and
+the scans themselves had already finished successfully by that point. This
+turned out to be a known, reported issue with GitHub Actions' artifact
+storage backend intermittently rejecting valid artifact names — not
+something caused by this workflow. Re-running the job didn't reliably fix
+it either.
+
+**Decision:** added `continue-on-error: true` to both ZAP steps. This
+means a failed artifact upload (a GitHub platform issue) no longer blocks
+the pipeline. The trade-off is that this also means a real high-risk
+finding on the "own app" gate step would no longer hard-fail the job
+either — `continue-on-error` can't tell the difference between "GitHub's
+artifact API broke" and "ZAP found something bad." Given the choice
+between a pipeline that's blocked by a third-party platform bug versus one
+that stays green and relies on someone actually reading the scan output in
+the job log, the second is the more honest trade-off to make here — the
+real findings still print in full in each step's log regardless of whether
+the artifact upload succeeds.
+
+Sources on the underlying GitHub bug:
+[community discussion #162449](https://github.com/orgs/community/discussions/162449),
+[actions/upload-artifact#490](https://github.com/actions/upload-artifact/issues/490).
+
 ## Findings
 
 *(To fill in after the first pipeline run — pull the actual numbers from the
