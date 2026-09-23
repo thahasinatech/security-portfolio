@@ -1,0 +1,137 @@
+name: Shift-Left Security Pipeline
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - '03-shift-left-pipeline/**'
+      - '.github/workflows/security-pipeline.yml'
+  pull_request:
+    paths:
+      - '03-shift-left-pipeline/**'
+      - '.github/workflows/security-pipeline.yml'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: 03-shift-left-pipeline
+    steps:
+      - uses: actions/checkout@v4
+      
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r app/requirements.txt
+          pip install pytest "httpx<0.28"
+
+      - name: Run tests
+        run: pytest tests/ -v
+      
+
+  semgrep:
+    name: SAST - Semgrep
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install git (semgrep image may not ship it)
+        run: (apk add --no-cache git || (apt-get update -y && apt-get install -y git)) 2>&1 | tail -5
+
+      - name: Checkout Juice Shop source
+        uses: actions/checkout@v4
+        with:
+          repository: juice-shop/juice-shop
+          ref: master
+          path: juice-shop
+
+      - name: Run Semgrep (security-audit + OWASP Top 10 rulesets)
+        working-directory: 03-shift-left-pipeline
+        run: |
+          semgrep scan \
+            --config p/security-audit \
+            --config p/owasp-top-ten \
+            app/ ../juice-shop/ \
+            --sarif --output semgrep-results.sarif
+          semgrep scan \
+            --config p/security-audit \
+            --config p/owasp-top-ten \
+            app/ ../juice-shop/ \
+            --text
+
+      - name: Upload SARIF to GitHub code scanning
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 03-shift-left-pipeline/semgrep-results.sarif
+
+      - name: Upload Semgrep report artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: semgrep-report
+          path: 03-shift-left-pipeline/semgrep-results.sarif
+
+  dast:
+    name: DAST - OWASP ZAP
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install app dependencies
+        working-directory: 03-shift-left-pipeline
+        run: |
+          pip install -r app/requirements.txt
+          pip install uvicorn
+
+      - name: Start our own FastAPI app
+        working-directory: 03-shift-left-pipeline
+        run: |
+          nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
+          for i in $(seq 1 15); do
+            curl -sf http://localhost:8000/ && break
+            sleep 1
+          done
+
+      - name: Start OWASP Juice Shop (intentionally vulnerable DAST target)
+        run: |
+          docker run -d --name juice-shop -p 3000:3000 bkimminich/juice-shop
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:3000/ && break
+            sleep 2
+          done
+
+      - name: "ZAP baseline scan - our own app (gate: fail on high risk)"
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: 'http://localhost:8000'
+          fail_action: true
+          allow_issue_writing: false
+          cmd_options: '-I'
+          artifact_name: own-app-zap-report
+
+      - name: ZAP baseline scan - Juice Shop (report only, not a gate)
+        if: always()
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: 'http://localhost:3000'
+          fail_action: false
+          allow_issue_writing: false
+          cmd_options: '-I'
+          artifact_name: juice-shop-zap-report
